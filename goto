@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+
+#set -o errexit
+set -o pipefail
+
+[[ "${DEBUG}" == 'true' ]] && set -o xtrace
+
+
+# do or aws configure
+_command_or_config() {
+    local command=$@
+    $command
+    if [[ ! $? -eq 0 ]] ;then
+        command_configure='aws configure'
+        echo "$command fail"
+        echo "start:$command_configure"
+        $command_configure
+        $command
+    fi
+    return
+}
+
+#read format from config
+aws_get_output_format() {
+    local config_path="$HOME/.aws/config"
+    if [[ -e $config_path ]];then
+        RESULT=$(cat $config_path | grep output | awk -F '= ' '{print$2}')
+    fi
+    if [[ -z "$RESULT" ]];then
+        return 1
+    fi
+    return 0
+}
+
+#call describe-instances
+aws_query_ec2_attribute_by_Name(){
+    local name=$1
+    local attribute=$2
+    # query the first one only
+    local index=0
+    output=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=$name" --query "Reservations[*].Instances[$index].[$attribute]")
+    case $FORMAT in
+        json)
+            RESULT=$(echo "$output" | jq --raw-output '.[0][0]')
+        ;;
+        text)
+            RESULT=$output
+        ;;
+        *)
+            return 1
+        ;;
+    esac
+}
+
+ssh_to_named_host(){
+    local name=$1
+    local user=$user
+    local key=PublicIpAddress
+    _command_or_config aws_query_ec2_attribute_by_Name $name $key
+    ip=$RESULT
+    if [[ -z $ip ]];then
+        echo "Host not found" >&2
+        return 1
+    fi
+    echo "ssh $user@$ip"
+    ssh $user@$ip
+}
+
+
+# main
+hostname=${@: -1}
+user=$(whoami)
+while getopts ":u:" opt; do
+    case $opt in
+        u) user="$OPTARG"
+        ;;
+        \?) echo "Invalid option -$OPTARG" >&2
+        ;;
+    esac
+done
+# get format
+_command_or_config aws_get_output_format
+FORMAT=$RESULT
+
+ssh_to_named_host $hostname $user
